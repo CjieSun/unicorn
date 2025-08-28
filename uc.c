@@ -1151,10 +1151,9 @@ uc_err uc_irq_trigger(uc_engine *uc, uint32_t intno)
     // Set the interrupt as an exception to be handled
     uc->cpu->exception_index = (int)intno;
     
-    // Trigger a CPU interrupt to break out of the translation block
-    // and cause the exception to be processed
-    // CPU_INTERRUPT_HARD = 0x0002
-    cpu_interrupt(uc->cpu, 0x0002);
+    // Don't trigger CPU_INTERRUPT_HARD, just force an exit from the current TB
+    // so that the exception gets processed in the main execution loop
+    cpu_interrupt(uc->cpu, 0x0004); // CPU_INTERRUPT_EXITTB = 0x0004
     
     return UC_ERR_OK;
 }
