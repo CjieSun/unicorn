@@ -968,6 +968,20 @@ UNICORN_EXPORT
 uc_err uc_emu_stop(uc_engine *uc);
 
 /*
+ Trigger an interrupt on the emulated CPU.
+ This function can be used to inject interrupts into the CPU which will
+ then be handled by any registered UC_HOOK_INTR callback.
+
+ @uc: handle returned by uc_open()
+ @intno: interrupt number to trigger
+
+ @return UC_ERR_OK on success, or other value on failure (refer to uc_err enum
+   for detailed error).
+*/
+UNICORN_EXPORT
+uc_err uc_irq_trigger(uc_engine *uc, uint32_t intno);
+
+/*
  Register callback for a hook event.
  The callback will be run when the hook event is hit.
 

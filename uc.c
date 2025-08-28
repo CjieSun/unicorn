@@ -1139,6 +1139,25 @@ uc_err uc_emu_stop(uc_engine *uc)
     return err;
 }
 
+UNICORN_EXPORT
+uc_err uc_irq_trigger(uc_engine *uc, uint32_t intno)
+{
+    UC_INIT(uc);
+    
+    if (uc->cpu == NULL) {
+        return UC_ERR_HANDLE;
+    }
+    
+    // Set the interrupt as an exception to be handled
+    uc->cpu->exception_index = (int)intno;
+    
+    // Don't trigger CPU_INTERRUPT_HARD, just force an exit from the current TB
+    // so that the exception gets processed in the main execution loop
+    cpu_interrupt(uc->cpu, 0x0004); // CPU_INTERRUPT_EXITTB = 0x0004
+    
+    return UC_ERR_OK;
+}
+
 // return target index where a memory region at the address exists, or could be
 // inserted
 //

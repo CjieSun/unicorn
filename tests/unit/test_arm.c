@@ -956,6 +956,49 @@ static void test_arm_cp15_c1_c0_2(void)
     OK(uc_close(uc));
 }
 
+// Global variables for IRQ test
+static int irq_test_called = 0;
+static uint32_t irq_test_intno = 0;
+
+// IRQ test callback function
+static void test_arm_irq_trigger_hook(uc_engine *uc, uint32_t intno, void *user_data)
+{
+    irq_test_called = 1;
+    irq_test_intno = intno;
+    // Stop emulation when interrupt is received
+    uc_emu_stop(uc);
+}
+
+static void test_arm_irq_trigger(void)
+{
+    uc_engine *uc;
+    uc_hook hook;
+    char code[] = "\x00\xf0\x20\xe3"; // nop
+    
+    // Reset test state
+    irq_test_called = 0;
+    irq_test_intno = 0;
+
+    uc_common_setup(&uc, UC_ARCH_ARM, UC_MODE_ARM, code, sizeof(code) - 1,
+                    UC_CPU_ARM_CORTEX_A15);
+
+    // Register interrupt hook
+    OK(uc_hook_add(uc, &hook, UC_HOOK_INTR, test_arm_irq_trigger_hook, NULL, 0, 0));
+
+    // Trigger interrupt 42
+    OK(uc_irq_trigger(uc, 42));
+
+    // Start emulation - should be interrupted immediately
+    OK(uc_emu_start(uc, code_start, code_start + sizeof(code) - 1, 0, 1));
+
+    // Verify interrupt was called with correct number
+    TEST_CHECK(irq_test_called == 1);
+    TEST_CHECK(irq_test_intno == 42);
+
+    OK(uc_hook_del(uc, hook));
+    OK(uc_close(uc));
+}
+
 TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_thumb_sub", test_arm_thumb_sub},
              {"test_armeb_sub", test_armeb_sub},
@@ -985,4 +1028,5 @@ TEST_LIST = {{"test_arm_nop", test_arm_nop},
              {"test_arm_tcg_opcode_cmp", test_arm_tcg_opcode_cmp},
              {"test_arm_thumb_tcg_opcode_cmn", test_arm_thumb_tcg_opcode_cmn},
              {"test_arm_cp15_c1_c0_2", test_arm_cp15_c1_c0_2},
+             {"test_arm_irq_trigger", test_arm_irq_trigger},
              {NULL, NULL}};
