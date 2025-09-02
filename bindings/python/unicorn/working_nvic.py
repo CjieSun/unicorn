@@ -19,6 +19,16 @@ import struct
 from typing import Dict, List, Optional, Callable
 from unicorn import *
 from unicorn.arm_const import *
+from unicorn.unicorn_const import (
+    UC_HOOK_MEM_FETCH_UNMAPPED,
+    UC_MEM_FETCH_UNMAPPED,
+    UC_PROT_READ,
+    UC_PROT_WRITE,
+    UC_ARCH_ARM,
+    UC_MODE_THUMB,
+    UC_MODE_MCLASS,
+    UC_HOOK_CODE,
+)
 
 # NVIC Register Addresses (ARMv7-M Architecture Reference Manual)
 NVIC_BASE = 0xE000E100
@@ -61,15 +71,31 @@ class WorkingNVIC:
         
         # Vector table base address (default reset value)
         self.vtor = 0x00000000
-        
-        # Interrupt handlers
+
+        # Interrupt handlers and EXC_RETURN tracking
         self.interrupt_handlers: Dict[int, Callable] = {}
-        
+        self._active_irq: Optional[int] = None  # Track currently active IRQ for return
+        self._exc_fetch_hook = None
+
         # Map system control space
         try:
             uc.mem_map(0xE0000000, 0x100000, UC_PROT_READ | UC_PROT_WRITE)
         except UcError:
             pass  # Already mapped
+
+        # Install a fetch-unmapped hook to emulate Cortex-M EXC_RETURN
+        # Unicorn/QEMU may not handle EXC_RETURN addresses directly in this build.
+        try:
+            self._exc_fetch_hook = uc.hook_add(
+                UC_HOOK_INTR,
+                self._exc_return_fetch_hook,
+                begin=0xFFFFFF00,
+                end=0xFFFFFFFF
+            )
+        except Exception:
+            # Hook add can fail on some builds; NVIC will still function, but ISR returns
+            # via EXC_RETURN may raise UC_ERR_EXCEPTION without this hook.
+            self._exc_fetch_hook = None
             
     def enable_irq(self, irq_num: int):
         """Enable an interrupt."""
@@ -313,31 +339,85 @@ class WorkingNVIC:
             self.uc.reg_write(UC_ARM_REG_IPSR, exception_number)
         except:
             pass  # IPSR might not be directly writable
-            
+
         # Read vector from vector table
         vector_address = self.vtor + (exception_number * 4)
         vector_data = self.uc.mem_read(vector_address, 4)
         vector = struct.unpack("<I", vector_data)[0]
         
         # Set PC to ISR address (clear LSB for Thumb mode)
-        isr_address = vector & 0xFFFFFFFE
+        isr_address = vector
         self.uc.reg_write(UC_ARM_REG_PC, isr_address)
         
         # Set LR to EXC_RETURN value
+        # 0xFFFFFFFD = Return to Thread mode, use PSP after return
         # 0xFFFFFFF9 = Return to Thread mode, use MSP after return  
-        exc_return = 0xFFFFFFF9
+        # 0xFFFFFFF1 = Return to Handler mode, use MSP after return
+        exc_return = 0xFFFFFFF9  # Return to Thread mode with MSP
         self.uc.reg_write(UC_ARM_REG_LR, exc_return)
         
         # Mark interrupt as active and clear pending
         self.active[irq_num] = True
+        self._active_irq = irq_num
         self.pending[irq_num] = False
-        
+
         # Call user interrupt handler if registered
         if irq_num in self.interrupt_handlers:
             try:
                 self.interrupt_handlers[irq_num](irq_num)
             except Exception as e:
                 print(f"[NVIC] Error in interrupt handler {irq_num}: {e}")
+
+    def _exc_return_fetch_hook(self, uc: Uc, exception_index: int, user_data: int):
+        """
+        Emulate exception return when PC jumps to EXC_RETURN (0xFFFFFFF1/F9/FD).
+        This avoids UC_ERR_EXCEPTION when QEMU doesn't recognize EXC_RETURN addresses.
+        """
+
+        #print(f"_exc_return_fetch_hook, exception_index={exception_index}, user_data={user_data}")
+
+        if exception_index in (8, 9, 0xD):
+            try:
+                self._do_exception_return(0xFFFFFFF9)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _do_exception_return(self, exc_return: int):
+        """
+        Manually perform exception return by unstacking the standard frame.
+        Supports 0xFFFFFFF9 (MSP) and 0xFFFFFFFD (PSP). PSP handling falls back to using SP
+        if PSP isn't directly accessible via Unicorn API.
+        """
+        # Determine which stack to use: bit[2] == 0 -> MSP, 1 -> PSP
+        use_psp = (exc_return & 0x4) != 0
+
+        # Unicorn API often exposes only the current SP; for PSP, we optimistically use SP.
+        # If your firmware uses PSP, consider extending Unicorn to expose PSP or track it in Python.
+        sp = self.uc.reg_read(UC_ARM_REG_SP)
+
+        # Pop standard exception frame
+        frame = self.uc.mem_read(sp, 32)
+        r0, r1, r2, r3, r12, lr, pc, xpsr = struct.unpack("<8I", frame)
+        sp += 32
+
+        # Restore registers
+        self.uc.reg_write(UC_ARM_REG_R0, r0)
+        self.uc.reg_write(UC_ARM_REG_R1, r1)
+        self.uc.reg_write(UC_ARM_REG_R2, r2)
+        self.uc.reg_write(UC_ARM_REG_R3, r3)
+        self.uc.reg_write(UC_ARM_REG_R12, r12)
+        self.uc.reg_write(UC_ARM_REG_LR, lr)
+        # Ensure PC is aligned for Thumb
+        self.uc.reg_write(UC_ARM_REG_PC, pc + 1)
+        self.uc.reg_write(UC_ARM_REG_SP, sp)
+
+        # Clear active IRQ tracking
+        if self._active_irq is not None:
+            if 0 <= self._active_irq < self.max_irqs:
+                self.active[self._active_irq] = False
+            self._active_irq = None
                 
     def add_interrupt_handler(self, irq_num: int, handler: Callable[[int], None]):
         """

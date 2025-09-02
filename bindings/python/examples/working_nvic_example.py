@@ -26,7 +26,7 @@ from unicorn.arm_const import *
 from unicorn.working_nvic import WorkingNVIC, create_cortex_m_with_nvic
 
 # Memory layout
-FLASH_BASE = 0x08000000
+FLASH_BASE = 0x00000000
 RAM_BASE = 0x20000000
 NVIC_BASE = 0xE000E100
 
@@ -34,49 +34,54 @@ NVIC_BASE = 0xE000E100
 ARM_CODE = bytes([
     # Vector table (first 8 system + 8 external interrupt vectors)
     0x00, 0x10, 0x00, 0x20,  # 0x00: Initial SP = 0x20001000
-    0x31, 0x00, 0x00, 0x08,  # 0x04: Reset handler = 0x08000030 + 1
-    0x41, 0x00, 0x00, 0x08,  # 0x08: NMI handler = 0x08000040 + 1
-    0x41, 0x00, 0x00, 0x08,  # 0x0C: Hard fault = 0x08000040 + 1
-    0x00, 0x00, 0x00, 0x00,  # 0x10: Reserved
-    0x00, 0x00, 0x00, 0x00,  # 0x14: Reserved  
-    0x00, 0x00, 0x00, 0x00,  # 0x18: Reserved
+    0x51, 0x00, 0x00, 0x00,  # 0x04: Reset handler = 0x00000050 + 1
+    0x51, 0x00, 0x00, 0x00,  # 0x08: NMI handler = 0x00000050 + 1
+    0x51, 0x00, 0x00, 0x00,  # 0x0C: Hard fault = 0x00000050 + 1
+    0x00, 0x00, 0x00, 0x00,  # 0x10: MemManage fault = 0x00000000
+    0x00, 0x00, 0x00, 0x00,  # 0x14: Bus fault = 0x00000000  
+    0x00, 0x00, 0x00, 0x00,  # 0x18: Usage fault = 0x00000000
     0x00, 0x00, 0x00, 0x00,  # 0x1C: Reserved
     0x00, 0x00, 0x00, 0x00,  # 0x20: Reserved
     0x00, 0x00, 0x00, 0x00,  # 0x24: Reserved
     0x00, 0x00, 0x00, 0x00,  # 0x28: Reserved
-    0x00, 0x00, 0x00, 0x00,  # 0x2C: Reserved
+    0x00, 0x00, 0x00, 0x00,  # 0x2C: SVCall = 0x00000000
+    0x00, 0x00, 0x00, 0x00,  # 0x30: DebugMon = 0x00000000
+    0x00, 0x00, 0x00, 0x00,  # 0x34: Reserved
+    0x00, 0x00, 0x00, 0x00,  # 0x38: PendSV = 0x00000000
+    0x00, 0x00, 0x00, 0x00,  # 0x3C: SysTick = 0x00000000
+
     
     # External interrupt vectors
-    0x49, 0x00, 0x00, 0x08,  # 0x30: IRQ0 (Timer) = 0x08000048 + 1
-    0x51, 0x00, 0x00, 0x08,  # 0x34: IRQ1 (UART) = 0x08000050 + 1
-    0x59, 0x00, 0x00, 0x08,  # 0x38: IRQ2 (GPIO) = 0x08000058 + 1
-    0x41, 0x00, 0x00, 0x08,  # 0x3C: IRQ3 = default handler
+    0x61, 0x00, 0x00, 0x00,  # 0x40: IRQ0 (Timer) = 0x00000050 + 1
+    0x69, 0x00, 0x00, 0x00,  # 0x44: IRQ1 (UART) = 0x00000068 + 1
+    0x71, 0x00, 0x00, 0x00,  # 0x48: IRQ2 (GPIO) = 0x00000070 + 1
+    0x51, 0x00, 0x00, 0x00,  # 0x4C: IRQ3 = default handler
     
-    # Reset handler at 0x08000040
+    # Reset handler at 0x00000050
     0x00, 0x20,              # movs r0, #0      
     0x01, 0x21,              # movs r1, #1      
     0x08, 0x44,              # add  r0, r1      
     0xFE, 0xE7,              # b    .           (infinite loop)
     
-    # Default exception/interrupt handler at 0x08000048
+    # Default exception/interrupt handler at 0x00000058
     0x02, 0x22,              # movs r2, #2      
     0x10, 0x44,              # add  r0, r2      
     0x70, 0x47,              # bx   lr          (return from interrupt)
     0x00, 0xBF,              # nop              (padding)
 
-    # Timer interrupt handler at 0x08000050
+    # Timer interrupt handler at 0x00000060
     0x0A, 0x23,              # movs r3, #10     
     0x18, 0x44,              # add  r0, r3      
     0x70, 0x47,              # bx   lr          (return from interrupt)
     0x00, 0xBF,              # nop              (padding)
     
-    # UART interrupt handler at 0x08000058  
+    # UART interrupt handler at 0x00000068  
     0x14, 0x23,              # movs r3, #20     
     0x18, 0x44,              # add  r0, r3      
     0x70, 0x47,              # bx   lr          (return from interrupt)
     0x00, 0xBF,              # nop              (padding)
     
-    # GPIO interrupt handler at 0x08000060
+    # GPIO interrupt handler at 0x00000070
     0x1E, 0x23,              # movs r3, #30     
     0x18, 0x44,              # add  r0, r3      
     0x70, 0x47,              # bx   lr          (return from interrupt)
@@ -158,11 +163,14 @@ def main():
             
             # Get current registers
             pc = uc.reg_read(UC_ARM_REG_PC)
+            bs = uc.mem_read(address & ~1, size)
             sp = uc.reg_read(UC_ARM_REG_SP)
             r0 = uc.reg_read(UC_ARM_REG_R0)
-            
-            print(f"[EXEC] #{instruction_count:3d} PC=0x{pc:08x} SP=0x{sp:08x} R0=0x{r0:08x}")
-            
+
+            print("[%06d] 0x%08x: %s | size=%d R0=0x%08x SP=0x%08x" % (
+                instruction_count, pc, bs.hex(), size, r0, sp
+            ))
+
             # Simulate peripheral interrupts at specific instruction counts
             if instruction_count == 3:
                 print("[SIM] Timer interrupt triggered by peripheral")
@@ -195,7 +203,7 @@ def main():
         
         # Start emulation
         try:
-            uc.emu_start(FLASH_BASE + 0x40, FLASH_BASE + len(ARM_CODE), count=100)
+            uc.emu_start(FLASH_BASE + 0x51, FLASH_BASE + len(ARM_CODE), count=100)
         except UcError as e:
             if e.errno != UC_ERR_OK:
                 print(f"[!] Emulation stopped: {e}")
